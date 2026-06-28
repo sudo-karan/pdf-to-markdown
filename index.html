@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <!--
+    AIR-GAP CONTENT SECURITY POLICY
+    ================================
+    default-src 'none' means: by default, NOTHING may load. Every capability
+    below is same-origin ('self') only. There is no http(s) host anywhere in
+    this policy, so the page is physically incapable of making a network
+    request to the internet. You can unplug the network cable and it still
+    works. The only non-'self' tokens are:
+      - 'wasm-unsafe-eval' : lets pdf.js / tesseract instantiate their WASM
+                             (does NOT enable general eval()/inline scripts).
+      - data: / blob:      : in-memory images & download URLs we create.
+    'unsafe-inline' is deliberately absent for scripts, so injected markup
+    from a malicious PDF cannot execute (no inline handlers, no javascript:).
+  -->
+  <meta http-equiv="Content-Security-Policy" content="
+    default-src 'none';
+    script-src 'self' 'wasm-unsafe-eval';
+    worker-src 'self' blob:;
+    style-src 'self';
+    img-src 'self' data: blob:;
+    font-src 'self';
+    connect-src 'self' data: blob:;
+    object-src 'none';
+    base-uri 'none';
+    form-action 'none';
+    manifest-src 'self';
+  " />
+  <!-- frame-ancestors is intentionally omitted: it is ignored in a <meta> CSP
+       and only works as an HTTP header. Set it at the server if you embed-protect. -->
+  <link rel="icon" href="data:," />
+
+  <title>PDF &rarr; Markdown &middot; Offline / Air-Gapped</title>
+  <link rel="stylesheet" href="assets/css/styles.css" />
+
+  <!-- marked (UMD) loaded as a classic script so window.marked is ready before our modules run -->
+  <script src="vendor/marked/marked.min.js"></script>
+</head>
+<body>
+  <header class="app-header">
+    <div class="brand">
+      <span class="logo" aria-hidden="true">&#9633;&rarr;M</span>
+      <div>
+        <h1>PDF &rarr; Markdown</h1>
+        <p class="tagline">100% offline &middot; air-gapped &middot; nothing leaves your machine</p>
+      </div>
+    </div>
+    <div class="net-badge" id="netBadge" title="Network status of this page">
+      <span class="dot" id="netDot"></span>
+      <span id="netText">checking&hellip;</span>
+    </div>
+  </header>
+
+  <main class="layout">
+    <!-- LEFT: controls -->
+    <section class="panel controls" aria-label="Controls">
+      <div id="dropZone" class="dropzone" tabindex="0" role="button" aria-label="Choose or drop a PDF file">
+        <input id="fileInput" type="file" accept="application/pdf,.pdf" class="visually-hidden" />
+        <div class="dropzone-inner">
+          <div class="dz-icon" aria-hidden="true">&#128196;</div>
+          <p class="dz-title">Drop a PDF here</p>
+          <p class="dz-sub">or click to browse &middot; files never leave this device</p>
+        </div>
+      </div>
+
+      <fieldset class="opts">
+        <legend>Images &amp; diagrams</legend>
+
+        <label class="opt">
+          <span>Image handling</span>
+          <select id="optImageMode">
+            <option value="extract" selected>Extract &amp; embed images + diagrams</option>
+            <option value="none">Text only (skip images)</option>
+          </select>
+        </label>
+
+        <label class="opt checkbox">
+          <input type="checkbox" id="optDiagrams" checked />
+          <span>Capture vector diagrams / charts (rasterize regions)</span>
+        </label>
+
+        <label class="opt checkbox">
+          <input type="checkbox" id="optCaptions" checked />
+          <span>Detect captions &amp; figure labels (Figure&nbsp;1, Table&nbsp;2&hellip;)</span>
+        </label>
+
+        <label class="opt checkbox">
+          <input type="checkbox" id="optAltText" checked />
+          <span>Use embedded alt-text from tagged PDFs when present</span>
+        </label>
+
+        <label class="opt checkbox">
+          <input type="checkbox" id="optOcr" />
+          <span>Run offline OCR on images &amp; scanned pages
+            <small class="hint">reads text inside diagrams/scans &middot; slower &middot; first run loads the local model</small>
+          </span>
+        </label>
+      </fieldset>
+
+      <fieldset class="opts">
+        <legend>Document structure</legend>
+        <label class="opt checkbox">
+          <input type="checkbox" id="optHeadings" checked />
+          <span>Infer headings from font sizes</span>
+        </label>
+        <label class="opt checkbox">
+          <input type="checkbox" id="optLists" checked />
+          <span>Detect bullet &amp; numbered lists</span>
+        </label>
+        <label class="opt checkbox">
+          <input type="checkbox" id="optEmphasis" checked />
+          <span>Preserve <strong>bold</strong> / <em>italic</em> (best-effort)</span>
+        </label>
+        <label class="opt checkbox">
+          <input type="checkbox" id="optFrontMatter" checked />
+          <span>Add front-matter (title, author, source)</span>
+        </label>
+        <label class="opt checkbox">
+          <input type="checkbox" id="optPageRules" />
+          <span>Insert <code>---</code> between pages</span>
+        </label>
+      </fieldset>
+
+      <fieldset class="opts">
+        <legend>Output</legend>
+        <label class="opt">
+          <span>Format</span>
+          <select id="optOutput">
+            <option value="zip" selected>ZIP &mdash; .md + /images folder</option>
+            <option value="inline">Single .md &mdash; images inline (base64)</option>
+          </select>
+        </label>
+      </fieldset>
+
+      <div class="actions">
+        <button id="convertBtn" class="btn primary" disabled>Convert</button>
+        <button id="downloadBtn" class="btn" disabled>Download</button>
+        <button id="copyBtn" class="btn" disabled>Copy Markdown</button>
+      </div>
+
+      <div id="progress" class="progress hidden">
+        <div class="bar"><div id="progressBar" class="bar-fill"></div></div>
+        <p id="progressText" class="progress-text"></p>
+      </div>
+
+      <p id="status" class="status" role="status" aria-live="polite"></p>
+    </section>
+
+    <!-- RIGHT: output -->
+    <section class="panel output" aria-label="Output">
+      <div class="tabs" role="tablist">
+        <button class="tab active" id="tabPreview" role="tab" aria-selected="true">Preview</button>
+        <button class="tab" id="tabSource" role="tab" aria-selected="false">Markdown source</button>
+        <div class="spacer"></div>
+        <span id="docMeta" class="doc-meta"></span>
+      </div>
+      <div id="previewPane" class="pane preview-pane" role="tabpanel">
+        <div class="empty-state">
+          <p>Your converted Markdown preview will appear here.</p>
+          <p class="muted">Pick a PDF and press <strong>Convert</strong>.</p>
+        </div>
+      </div>
+      <textarea id="sourcePane" class="pane source-pane hidden" spellcheck="false" readonly
+                aria-label="Markdown source"></textarea>
+    </section>
+  </main>
+
+  <div id="offlineBanner" class="offline-banner hidden">
+    <strong>Heads up:</strong> you opened this file directly (<code>file://</code>).
+    Browsers block web-workers &amp; local file reads under <code>file://</code>, which this
+    converter needs. Run the included offline server instead &mdash; still 100% local:
+    <code>python3 serve.py</code> &nbsp;then open&nbsp; <code>http://localhost:8000</code>.
+    <button id="dismissBanner" class="btn tiny">Dismiss</button>
+  </div>
+
+  <footer class="app-footer">
+    <span>All processing is local. Verify: open DevTools &rarr; Network &mdash; you will see zero external requests.</span>
+  </footer>
+
+  <script type="module" src="assets/js/app.js"></script>
+</body>
+</html>
