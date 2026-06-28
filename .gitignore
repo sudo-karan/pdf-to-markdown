@@ -1,0 +1,5 @@
+# build-only scratch (vendored libs are copied out of here into ./vendor and committed)
+.build/
+node_modules/
+*.log
+.DS_Store
