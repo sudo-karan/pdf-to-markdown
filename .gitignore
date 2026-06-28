@@ -1,5 +1,9 @@
 # build-only scratch (vendored libs are copied out of here into ./vendor and committed)
 .build/
+node_modules
 node_modules/
 *.log
 .DS_Store
+
+# generated test fixture (recreate with: node tests/generate-fixture.mjs)
+tests/fixture.pdf

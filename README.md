@@ -107,9 +107,21 @@ dependencies are designed for.
    there are **zero** external requests (only same-origin `vendor/` assets).
 3. **Pull the plug.** Disconnect from the network (or run the machine offline)
    and it works identically.
+4. **Run the test.** `tests/airgap.test.mjs` serves the app, converts a PDF in
+   headless Chromium under the real CSP, and **fails if any off-host request is
+   made**. See [`tests/README.md`](tests/README.md).
 
-The included automated test also asserts that converting a PDF produces **no
-off-host requests** under the real CSP.
+### What happens to your files?
+
+Your PDF is **never uploaded**. It is read into memory and converted entirely in
+your browser (pdf.js runs in a local Web Worker). Nothing is written to disk,
+cookies, `localStorage`, or `IndexedDB`; extracted images are in-memory `blob:`
+URLs that are revoked when you leave the page. The only file ever saved is the
+Markdown/ZIP **you** choose to download. When hosted on GitHub Pages, the static
+host only *serves* the app's files to your browser — it has no backend and
+cannot receive your PDF. OCR is identical: the engine and English model are
+loaded from same-origin `vendor/` assets and run in your browser; image data
+never leaves the page.
 
 ---
 

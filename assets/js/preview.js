@@ -40,31 +40,51 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
-// Minimal allow-list-ish sanitizer: strip <script>/<style>/<iframe>, all on*
-// handlers, and javascript:/vbscript: URLs. Renders into a detached template so
-// nothing executes during cleaning.
+// Allow-list sanitizer (defence-in-depth on top of: (a) the page CSP, which
+// blocks inline scripts/handlers and external loads, and (b) source-level
+// escaping in converter.js, which strips angle brackets from PDF-derived text).
+// Only known-safe tags survive; everything else is dropped or unwrapped, every
+// attribute is removed unless explicitly allowed, and URLs must match a safe
+// scheme allow-list. Parsed into a detached <template> so nothing executes.
+const ALLOWED_TAGS = new Set([
+  'a', 'p', 'br', 'hr', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+  'ul', 'ol', 'li', 'strong', 'em', 'b', 'i', 'u', 's', 'del', 'ins',
+  'code', 'pre', 'blockquote', 'table', 'thead', 'tbody', 'tfoot',
+  'tr', 'th', 'td', 'img', 'details', 'summary', 'span', 'sub', 'sup',
+]);
+const DROP_WITH_SUBTREE = new Set([
+  'script', 'style', 'iframe', 'object', 'embed', 'meta', 'base', 'link',
+  'form', 'input', 'button', 'svg', 'math', 'template', 'noscript', 'frame', 'frameset',
+]);
+const ALLOWED_ATTRS = {
+  a: ['href', 'title'], img: ['src', 'alt', 'title'],
+  td: ['align'], th: ['align'], details: ['open'], ol: ['start'],
+};
+// relative, anchor, http(s), mailto — plus data:/blob: images for <img> only.
+const SAFE_URL = /^(https?:|mailto:|#|\/|\.?\.?\/|[a-z0-9._~%-]+(?:[/?#]|$))/i;
+
 function sanitize(html) {
   const tpl = document.createElement('template');
   tpl.innerHTML = html;
-  const walker = document.createTreeWalker(tpl.content, NodeFilter.SHOW_ELEMENT);
-  const kill = [];
-  let node = walker.nextNode();
-  while (node) {
-    const tag = node.tagName.toLowerCase();
-    if (tag === 'script' || tag === 'style' || tag === 'iframe' || tag === 'object' || tag === 'embed') {
-      kill.push(node);
-    } else {
-      for (const attr of [...node.attributes]) {
-        const name = attr.name.toLowerCase();
+  for (const el of [...tpl.content.querySelectorAll('*')]) {
+    if (!tpl.content.contains(el)) continue;            // already removed via an ancestor
+    const tag = el.tagName.toLowerCase();
+    if (!ALLOWED_TAGS.has(tag)) {
+      if (DROP_WITH_SUBTREE.has(tag)) el.remove();
+      else el.replaceWith(...el.childNodes);            // unwrap unknown-but-harmless tag, keep text
+      continue;
+    }
+    const allowed = ALLOWED_ATTRS[tag] || [];
+    for (const attr of [...el.attributes]) {
+      const name = attr.name.toLowerCase();
+      if (!allowed.includes(name)) { el.removeAttribute(attr.name); continue; }
+      if (name === 'href' || name === 'src') {
         const val = attr.value.trim();
-        if (name.startsWith('on')) node.removeAttribute(attr.name);
-        else if ((name === 'href' || name === 'src' || name === 'xlink:href') && /^\s*(javascript|vbscript|data:text\/html)/i.test(val)) {
-          node.removeAttribute(attr.name);
-        }
+        const ok = SAFE_URL.test(val) || (tag === 'img' && /^(data:image\/|blob:)/i.test(val));
+        if (!ok) el.removeAttribute(attr.name);
       }
     }
-    node = walker.nextNode();
+    if (tag === 'a' && el.hasAttribute('href')) el.setAttribute('rel', 'noopener noreferrer nofollow');
   }
-  kill.forEach(n => n.remove());
   return tpl.innerHTML;
 }

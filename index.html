@@ -47,7 +47,7 @@
       <span class="logo" aria-hidden="true">&#9633;&rarr;M</span>
       <div>
         <h1>PDF &rarr; Markdown</h1>
-        <p class="tagline">100% offline &middot; air-gapped &middot; nothing leaves your machine</p>
+        <p class="tagline">Runs entirely in your browser &middot; your file never leaves your device</p>
       </div>
     </div>
     <div class="net-badge" id="netBadge" title="Network status of this page">
@@ -59,14 +59,29 @@
   <main class="layout">
     <!-- LEFT: controls -->
     <section class="panel controls" aria-label="Controls">
+      <!-- File input is a sibling (not nested inside the role=button dropzone) to
+           avoid nested interactive controls; the dropzone forwards clicks to it. -->
+      <input id="fileInput" type="file" accept="application/pdf,.pdf" class="visually-hidden" />
       <div id="dropZone" class="dropzone" tabindex="0" role="button" aria-label="Choose or drop a PDF file">
-        <input id="fileInput" type="file" accept="application/pdf,.pdf" class="visually-hidden" />
         <div class="dropzone-inner">
           <div class="dz-icon" aria-hidden="true">&#128196;</div>
           <p class="dz-title">Drop a PDF here</p>
           <p class="dz-sub">or click to browse &middot; files never leave this device</p>
         </div>
       </div>
+
+      <details class="privacy">
+        <summary>&#128274; Your data &amp; privacy &mdash; what happens to your file</summary>
+        <div class="privacy-body">
+          <ul>
+            <li><strong>Your PDF never leaves your device.</strong> It is read into memory and converted entirely in your browser &mdash; there is no upload, no server, and no database.</li>
+            <li><strong>Nothing is stored.</strong> Files are not written to disk, cookies, or local storage. Close the tab and everything is gone. The only file saved is the Markdown/ZIP <em>you</em> choose to download.</li>
+            <li><strong>No third parties.</strong> A strict Content-Security-Policy blocks every external connection &mdash; no analytics, no CDNs, no trackers. Verify in DevTools &rarr; Network: zero external requests.</li>
+            <li><strong>OCR runs locally too.</strong> The OCR engine and language model are bundled and run in your browser; image data is never sent anywhere.</li>
+            <li><strong>Hosting note:</strong> when opened from a website (e.g. GitHub Pages), your browser downloads <em>this app's own files</em> from that host, like any web page &mdash; but your PDF is never sent there. For a fully offline run with no network at all, download the project and open it locally.</li>
+          </ul>
+        </div>
+      </details>
 
       <fieldset class="opts">
         <legend>Images &amp; diagrams</legend>
@@ -153,20 +168,20 @@
 
     <!-- RIGHT: output -->
     <section class="panel output" aria-label="Output">
-      <div class="tabs" role="tablist">
-        <button class="tab active" id="tabPreview" role="tab" aria-selected="true">Preview</button>
-        <button class="tab" id="tabSource" role="tab" aria-selected="false">Markdown source</button>
+      <div class="tabs" role="tablist" aria-label="Output view">
+        <button class="tab active" id="tabPreview" role="tab" aria-selected="true" aria-controls="previewPane">Preview</button>
+        <button class="tab" id="tabSource" role="tab" aria-selected="false" aria-controls="sourcePane" tabindex="-1">Markdown source</button>
         <div class="spacer"></div>
         <span id="docMeta" class="doc-meta"></span>
       </div>
-      <div id="previewPane" class="pane preview-pane" role="tabpanel">
+      <div id="previewPane" class="pane preview-pane" role="tabpanel" aria-labelledby="tabPreview" tabindex="0">
         <div class="empty-state">
           <p>Your converted Markdown preview will appear here.</p>
           <p class="muted">Pick a PDF and press <strong>Convert</strong>.</p>
         </div>
       </div>
       <textarea id="sourcePane" class="pane source-pane hidden" spellcheck="false" readonly
-                aria-label="Markdown source"></textarea>
+                role="tabpanel" aria-labelledby="tabSource" aria-label="Markdown source"></textarea>
     </section>
   </main>
 

@@ -40,9 +40,22 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=ROOT, **kwargs)
 
+    def send_head(self):
+        # Refuse any path containing a dotfile/dotdir segment (e.g. .git, .github,
+        # .gitignore) so the dev server never exposes repository internals.
+        path = self.translate_path(self.path)
+        rel = os.path.relpath(path, ROOT)
+        if any(part.startswith(".") for part in rel.replace("\\", "/").split("/") if part not in ("", ".", "..")):
+            self.send_error(404, "Not Found")
+            return None
+        return super().send_head()
+
     def end_headers(self):
         # No caching during local use; never advertise gzip transport-encoding.
         self.send_header("Cache-Control", "no-store")
+        # Defensive headers for the local dev server.
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
         super().end_headers()
 
     def log_message(self, fmt, *args):

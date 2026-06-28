@@ -38,6 +38,7 @@ export async function getOcr(onProgress = () => {}) {
     langPath: v('tesseract/lang'),     // directory containing eng.traineddata.gz
     workerBlobURL: false,              // use same-origin worker script directly (CSP: worker-src 'self')
     gzip: true,                        // language data is shipped gzipped
+    cacheMethod: 'none',               // never persist the model to IndexedDB — nothing is stored between sessions
     logger: (m) => {
       if (m && typeof m.progress === 'number') {
         onProgress(m.progress, m.status || 'OCR…');

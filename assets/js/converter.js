@@ -92,7 +92,20 @@ export async function convertPdf(data, opts = {}, hooks = {}) {
     isEvalSupported: false,     // keep CSP tight: no eval needed
     useSystemFonts: false,      // never reach out to OS/network fonts
   });
-  const pdf = await loadingTask.promise;
+  let pdf;
+  try {
+    pdf = await loadingTask.promise;
+  } catch (e) {
+    try { await loadingTask.destroy(); } catch { /* noop */ }
+    const name = e && e.name;
+    if (name === 'PasswordException') {
+      throw new Error('This PDF is password-protected. Please remove the password and try again.');
+    }
+    if (name === 'InvalidPDFException') {
+      throw new Error('This file does not appear to be a valid PDF.');
+    }
+    throw new Error(`Could not open the PDF (${e && e.message ? e.message : e}).`);
+  }
 
   const docMeta = await safeMeta(pdf);
   docMeta.sourceName = opts.sourceName || '';
@@ -100,20 +113,33 @@ export async function convertPdf(data, opts = {}, hooks = {}) {
   const pageMarkdowns = [];
 
   const total = pdf.numPages;
-  for (let p = 1; p <= total; p++) {
-    onProgress((p - 1) / total, `Page ${p} / ${total}…`);
-    const page = await pdf.getPage(p);
-    const res = await convertPage(page, p, opts, { images, ocr, warnings, onProgress, total });
-    pageMarkdowns.push(res.markdown);
-    page.cleanup();
+  try {
+    for (let p = 1; p <= total; p++) {
+      onProgress((p - 1) / total, `Page ${p} / ${total}…`);
+      // Isolate each page: one corrupt/oversized page must not destroy the whole
+      // document — record a warning and keep going so the rest still converts.
+      try {
+        const page = await pdf.getPage(p);
+        try {
+          const res = await convertPage(page, p, opts, { images, ocr, warnings, onProgress, total });
+          pageMarkdowns.push(res.markdown);
+        } finally {
+          page.cleanup();
+        }
+      } catch (e) {
+        warnings.push(`Page ${p}: conversion failed (${e && e.message ? e.message : e}); page skipped.`);
+        pageMarkdowns.push('');
+      }
+    }
+
+    onProgress(0.98, 'Assembling Markdown…');
+    const md = assembleDocument(pageMarkdowns, docMeta, opts);
+    onProgress(1, 'Done');
+    return { markdown: md, images, meta: docMeta, warnings: dedupe(warnings) };
+  } finally {
+    // Always release the worker/document, even if assembly throws.
+    try { await pdf.destroy(); } catch { /* already gone */ }
   }
-
-  onProgress(0.98, 'Assembling Markdown…');
-  const md = assembleDocument(pageMarkdowns, docMeta, opts);
-
-  await pdf.destroy();
-  onProgress(1, 'Done');
-  return { markdown: md, images, meta: docMeta, warnings: dedupe(warnings) };
 }
 
 // =============================================================================
@@ -171,9 +197,9 @@ async function convertPage(page, pageNum, opts, ctx) {
   let pageCanvas = null;
   const needsRender = regions.length > 0 || (isScanned && ctx.ocr);
   if (needsRender) {
-    pageCanvas = await renderPage(page, viewport, pageW, pageH);
+    pageCanvas = await renderPage(page, pageW, pageH);
     for (const reg of regions) {
-      const blob = await cropToBlob(pageCanvas, reg.bbox, viewport, reg.kind);
+      const blob = await cropToBlob(pageCanvas, reg.bbox, reg.kind);
       if (!blob) { reg.skip = true; continue; }
       reg.name = `images/page-${pageNum}-${reg.kind === 'diagram' ? 'fig' : 'img'}-${reg.idx}.${blob.type === 'image/png' ? 'png' : 'jpg'}`;
       reg.blob = blob;
@@ -418,7 +444,9 @@ function renderMarkerList(block, bodyFont) {
     const m = l.text.match(/^(\s*)([•‣◦⁃∙\-\*·▪●○–■]|(\d+|[a-zA-Z]|[ivxlcdm]+)[.\)])\s+(.*)$/);
     const indent = '  '.repeat(depth);
     if (!m) return indent + '- ' + l.text;
-    const ordered = /\d|[a-zA-Z]|[ivxlcdm]/.test(m[2][0]) && /[.\)]$/.test(m[2]);
+    // Ordered only when the marker is itself an enumerator (digit/letter/roman +
+    // '.'/')'); bullet glyphs like - * – are never ordered.
+    const ordered = /^(\d+|[a-zA-Z]|[ivxlcdm]+)[.\)]$/.test(m[2]);
     const marker = ordered ? '1.' : '-';
     return `${indent}${marker} ${m[4]}`;
   }).join('\n');
@@ -437,27 +465,50 @@ function looksLikeIndentedList(block, pctx) {
 }
 
 // Inline emphasis using resolved font styles (real PostScript names / flags).
+// Spacing mirrors finalizeLine's gap logic so words split across font runs are
+// NOT broken by spurious spaces, and emphasis markers hug the text (separators
+// are emitted OUTSIDE the markers, so `**Hello**!` and `Hello **World**` are
+// both valid).
+const wrapFor = (s) => (s === 'bi' ? '***' : s === 'b' ? '**' : s === 'i' ? '*' : '');
+
 function inline(block, opts, pctx) {
   const styles = pctx && pctx.fontStyles;
   if (!opts.emphasis || !styles) return block.lines.map(l => l.text).join(' ');
-  const parts = [];
+
+  // 1) tokens: each visible item with its style and the separator that precedes it
+  const tokens = [];
+  let firstOverall = true;
   for (const line of block.lines) {
-    let buf = '', curStyle = '';
-    const flush = () => {
-      if (!buf.trim()) { buf = ''; return; }
-      const wrap = curStyle === 'bi' ? '***' : curStyle === 'b' ? '**' : curStyle === 'i' ? '*' : '';
-      parts.push(wrap + buf.trim() + wrap);
-      buf = '';
-    };
+    let prev = null;
     for (const it of line.rawItems) {
+      if (!it.str) { continue; }
       const st = styles.get(it.fontName) || { bold: false, italic: false };
       const style = (st.bold && st.italic) ? 'bi' : st.bold ? 'b' : st.italic ? 'i' : '';
-      if (style !== curStyle) { flush(); curStyle = style; }
-      buf += it.str + ' ';
+      let sep = '';
+      if (firstOverall) sep = '';
+      else if (prev) sep = (it.x - prev.right) > (it.fontH || 10) * 0.25 ? ' ' : '';
+      else sep = ' ';                       // line break within the block
+      tokens.push({ style, sep, str: it.str });
+      prev = it; firstOverall = false;
     }
-    flush();
   }
-  return parts.join(' ').replace(/\s+/g, ' ').trim();
+
+  // 2) group consecutive same-style tokens into runs (separators included)
+  const runs = [];
+  for (const t of tokens) {
+    if (!runs.length || runs[runs.length - 1].style !== t.style) runs.push({ style: t.style, text: '' });
+    runs[runs.length - 1].text += t.sep + t.str;
+  }
+
+  // 3) emit; for styled runs keep INTERNAL spacing but move leading/trailing
+  // whitespace OUTSIDE the markers (CommonMark rejects `** text **`).
+  let out = '';
+  for (const r of runs) {
+    if (!r.style) { out += r.text; continue; }
+    const m = r.text.match(/^(\s*)([\s\S]*?)(\s*)$/);
+    out += m[1] + (m[2] ? wrapFor(r.style) + m[2] + wrapFor(r.style) : '') + m[3];
+  }
+  return out.replace(/\s+/g, ' ').trim();
 }
 
 function isListMarker(t) {
@@ -542,10 +593,16 @@ function collectRegions(opList, viewport, pageArea, opts) {
   return regions;
 }
 
+// Pages drawn as dense vector art can emit thousands of path marks; the
+// pairwise merge below is ~O(n^2) per pass, so bound the input. Keeping the
+// largest-area marks preserves the shapes that define a figure's extent while
+// dropping fine detail (which clusters into the same regions anyway).
+const MAX_VECTOR_MARKS = 800;
+
 function clusterVectorMarks(marks, viewport, pageArea) {
   // ignore page-spanning thin rules / borders
   const pageW = viewport.width, pageH = viewport.height;
-  const filtered = marks.filter(m => {
+  let filtered = marks.filter(m => {
     const w = m.x1 - m.x0, h = m.y1 - m.y0;
     if (h < 3 && w > 0.5 * pageW) return false;   // horizontal rule
     if (w < 3 && h > 0.5 * pageH) return false;   // vertical rule
@@ -553,6 +610,9 @@ function clusterVectorMarks(marks, viewport, pageArea) {
     return true;
   });
   if (!filtered.length) return [];
+  if (filtered.length > MAX_VECTOR_MARKS) {
+    filtered = filtered.sort((a, b) => rArea(b) - rArea(a)).slice(0, MAX_VECTOR_MARKS);
+  }
 
   // iterative merge of marks whose inflated boxes overlap
   const gap = Math.max(12, Math.min(pageW, pageH) * 0.025);
@@ -622,8 +682,7 @@ function findCaption(bbox, lines, bodyFont, consumed) {
       // include continuation lines of the same caption block
       const indices = [best];
       let text = lines[best].text;
-      const dirStep = 1;
-      for (let j = best + dirStep; j < lines.length; j++) {
+      for (let j = best + 1; j < lines.length; j++) {
         if (consumed.has(j)) break;
         const l = lines[j], prev = lines[j - 1];
         const cont = l.text && !FIGURE_RE.test(l.text) && (l.top - prev.baseline) < bodyFont * 0.8
@@ -660,7 +719,9 @@ function renderMedia(reg, opts) {
   let s = `![${alt}](${reg.name})`;
   if (reg.caption) s += `\n\n*${mdEscapeText(reg.caption)}*`;
   if (reg.ocr) {
-    const body = reg.ocr.split(/\n{2,}/).map(p => p.replace(/\s*\n\s*/g, ' ').trim()).filter(Boolean).join('\n\n');
+    // OCR text is untrusted and is placed inside a raw <details> block, so it
+    // must be HTML-escaped as well as paragraph-normalized.
+    const body = paragraphs(reg.ocr).map(htmlAngle).join('\n\n');
     if (body.length > 1) {
       s += `\n\n<details><summary>Text recognized in this ${reg.kind === 'diagram' ? 'diagram' : 'image'} (OCR)</summary>\n\n${body}\n\n</details>`;
     }
@@ -668,14 +729,19 @@ function renderMedia(reg, opts) {
   return s;
 }
 
+// Split raw OCR text into trimmed, single-line paragraphs.
+function paragraphs(text) {
+  return text.split(/\n{2,}/).map(p => p.replace(/\s*\n\s*/g, ' ').trim()).filter(Boolean);
+}
+
 function ocrTextToMarkdown(text) {
-  return text.split(/\n{2,}/).map(p => p.replace(/\s*\n\s*/g, ' ').trim()).filter(Boolean).join('\n\n');
+  return paragraphs(text).map(htmlAngle).join('\n\n');
 }
 
 // =============================================================================
 // CANVAS / RASTERIZATION
 // =============================================================================
-async function renderPage(page, baseViewport, pageW, pageH) {
+async function renderPage(page, pageW, pageH) {
   const maxDim = 4000;
   const scale = Math.min(2, maxDim / Math.max(pageW, pageH));
   const viewport = page.getViewport({ scale });
@@ -690,7 +756,7 @@ async function renderPage(page, baseViewport, pageW, pageH) {
   return canvas;
 }
 
-async function cropToBlob(pageCanvas, bbox, baseViewport, kind) {
+async function cropToBlob(pageCanvas, bbox, kind) {
   const s = pageCanvas._scale || 1;
   const pad = 4;
   let x0 = Math.max(0, Math.floor(bbox.x0 * s) - pad);
@@ -753,6 +819,11 @@ function median(a) { if (!a.length) return 0; const s = [...a].sort((x, y) => x 
 function mode(a) { const m = new Map(); let best = a[0], bn = 0; for (const x of a) { const n = (m.get(x) || 0) + 1; m.set(x, n); if (n > bn) { bn = n; best = x; } } return best; }
 function medianBodyFont(lines) { const fs = []; for (const l of lines) if (l.text && l.text.length > 3) fs.push(l.fontH); return median(fs); }
 function dedupe(a) { return [...new Set(a)]; }
-function mdEscapeAlt(s) { return String(s).replace(/[\[\]\r\n]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 200); }
-function mdEscapeText(s) { return String(s).replace(/[\r\n]+/g, ' ').replace(/\s+/g, ' ').trim(); }
+// Neutralize HTML angle brackets so untrusted PDF-derived text (captions, alt,
+// OCR output) can never become live markup when the Markdown is previewed or
+// rendered downstream. Escaping '<'/'>' defeats tag and autolink injection while
+// leaving '&' intact for fidelity (markdown renderers escape it anyway).
+function htmlAngle(s) { return String(s).replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+function mdEscapeAlt(s) { return htmlAngle(String(s).replace(/[\[\]\r\n]+/g, ' ')).replace(/\s+/g, ' ').trim().slice(0, 200); }
+function mdEscapeText(s) { return htmlAngle(String(s).replace(/[\r\n]+/g, ' ')).replace(/\s+/g, ' ').trim(); }
 function yaml(s) { return /[:#"'\n]/.test(s) ? JSON.stringify(s) : s; }

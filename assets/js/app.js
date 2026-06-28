@@ -146,29 +146,24 @@ function onProgress(frac, msg) {
 // =============================================================================
 $('optOutput').addEventListener('change', () => { if (baseMarkdown) renderOutputs(gatherOpts()); });
 
-function renderOutputs(opts) {
+// Preview always uses the in-memory blob URLs; the source pane reflects the
+// chosen output mode (inline base64 is built on demand so it isn't shown stale).
+async function renderOutputs(opts) {
   previewPane.innerHTML = renderMarkdown(baseMarkdown, imageUrls);
-  sourcePane.value = getOutputMarkdown(opts.outputMode);
-}
-
-function getOutputMarkdown(mode) {
-  if (mode === 'inline') {
-    if (inlineMarkdown == null) return baseMarkdown; // not built yet (sync path); built on demand below
-    return inlineMarkdown;
-  }
-  return baseMarkdown;
+  sourcePane.value = (opts.outputMode === 'inline' && images.length)
+    ? await ensureInlineMarkdown()
+    : baseMarkdown;
 }
 
 // Build inline (base64) markdown lazily — needed for source view / download / copy.
+// Single pass over the document with a name→dataURL map (avoids O(images·len)
+// rebuilds and substring collisions between names like img-1 / img-11).
 async function ensureInlineMarkdown() {
   if (inlineMarkdown != null) return inlineMarkdown;
-  let md = baseMarkdown;
-  for (const img of images) {
-    const dataUrl = await blobToDataUrl(img.blob);
-    md = md.split('(' + img.name + ')').join('(' + dataUrl + ')');
-  }
-  inlineMarkdown = md;
-  return md;
+  const entries = await Promise.all(images.map(async (img) => [img.name, await blobToDataUrl(img.blob)]));
+  const map = new Map(entries);
+  inlineMarkdown = baseMarkdown.replace(/\]\(([^)\s]+)\)/g, (m, name) => map.has(name) ? `](${map.get(name)})` : m);
+  return inlineMarkdown;
 }
 
 // =============================================================================
@@ -179,15 +174,28 @@ tabSource.addEventListener('click', async () => {
   if (gatherOpts().outputMode === 'inline') { await ensureInlineMarkdown(); sourcePane.value = inlineMarkdown; }
   switchTab('source');
 });
-function switchTab(which) {
+function switchTab(which, focus) {
   const p = which === 'preview';
   tabPreview.classList.toggle('active', p);
   tabSource.classList.toggle('active', !p);
   tabPreview.setAttribute('aria-selected', String(p));
   tabSource.setAttribute('aria-selected', String(!p));
+  tabPreview.tabIndex = p ? 0 : -1;        // roving tabindex
+  tabSource.tabIndex = p ? -1 : 0;
   previewPane.classList.toggle('hidden', !p);
   sourcePane.classList.toggle('hidden', p);
+  if (focus) (p ? tabPreview : tabSource).focus();
 }
+
+// Arrow-key navigation across the tablist (WAI-ARIA tabs pattern).
+[tabPreview, tabSource].forEach((tab) => {
+  tab.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+      e.preventDefault();
+      switchTab(tab === tabPreview ? 'source' : 'preview', true);
+    }
+  });
+});
 
 // =============================================================================
 // Download / Copy
@@ -222,9 +230,16 @@ copyBtn.addEventListener('click', async () => {
     await navigator.clipboard.writeText(md);
     setStatus('Markdown copied to clipboard ✓', 'ok');
   } catch {
-    sourcePane.classList.remove('hidden'); sourcePane.value = md; sourcePane.select();
-    document.execCommand && document.execCommand('copy');
-    setStatus('Copied (fallback).', 'ok');
+    // Clipboard API unavailable (e.g. insecure context): fall back to a temporary
+    // selection, then restore the pane's prior visibility so the UI isn't altered.
+    const wasHidden = sourcePane.classList.contains('hidden');
+    sourcePane.classList.remove('hidden');
+    const prev = sourcePane.value;
+    sourcePane.value = md; sourcePane.select();
+    const ok = document.execCommand && document.execCommand('copy');
+    if (!ok) sourcePane.value = prev;
+    if (wasHidden) sourcePane.classList.add('hidden');
+    setStatus(ok ? 'Copied (fallback).' : 'Copy not supported here — use the Markdown source tab.', ok ? 'ok' : 'error');
   }
 });
 
@@ -236,6 +251,7 @@ function setButtons(disabled) {
   if (disabled) { downloadBtn.disabled = true; copyBtn.disabled = true; }
 }
 function resetOutput() {
+  revokeImageUrls();                 // release previous conversion's preview blob URLs
   baseMarkdown = ''; inlineMarkdown = null; images = [];
   previewPane.innerHTML = '<div class="empty-state"><p class="muted">Converting…</p></div>';
   sourcePane.value = '';
@@ -243,7 +259,8 @@ function resetOutput() {
 }
 function showProgress(on) { progress.classList.toggle('hidden', !on); if (on) setProgress(0, 'Starting…'); }
 function setProgress(frac, msg) {
-  progressBar.style.width = Math.round(Math.max(0, Math.min(1, frac)) * 100) + '%';
+  const f = Number(frac);
+  if (Number.isFinite(f)) progressBar.style.width = Math.round(Math.max(0, Math.min(1, f)) * 100) + '%';
   if (msg) progressText.textContent = msg;
 }
 function setStatus(msg, kind) {
@@ -277,9 +294,11 @@ function loadJSZip() {
     const s = document.createElement('script');
     s.src = new URL('vendor/jszip/jszip.min.js', document.baseURI).href;
     s.onload = () => window.JSZip ? resolve(window.JSZip) : reject(new Error('JSZip failed to load'));
+    // Note: on failure we clear the cached promise below so a later attempt can retry.
     s.onerror = () => reject(new Error('Could not load vendored jszip.min.js'));
     document.head.appendChild(s);
   });
+  _jszip.catch(() => { _jszip = null; });   // don't cache a rejection — allow retry
   return _jszip;
 }
 
