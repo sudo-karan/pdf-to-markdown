@@ -35,6 +35,8 @@ const html = `<!doctype html><html><head><meta charset="utf-8"><title>Quarterly 
   h1 { font-size: 26pt; } h2 { font-size: 18pt; } h3 { font-size: 14pt; }
   .cap { font-style: italic; font-size: 10pt; color:#333; }
   ul { margin: 8px 0 16px 24px; }
+  table { border-collapse: collapse; margin: 12px 0; font-size: 11pt; }
+  th, td { border: 1px solid #333; padding: 5px 16px; text-align: left; }
 </style></head><body>
   <h1>Quarterly Engineering Report</h1>
   <p>This document tests <strong>bold text</strong> and <em>italic text</em> extraction,
@@ -62,6 +64,13 @@ const html = `<!doctype html><html><head><meta charset="utf-8"><title>Quarterly 
     <text x="278" y="70" font-size="12">Home</text>
   </svg>
   <p class="cap">Figure 2: Vector flow diagram of the login sequence.</p>
+  <h2>Latency by service</h2>
+  <table>
+    <tr><th>Service</th><th>Role</th><th>Latency</th></tr>
+    <tr><td>auth-api</td><td>Auth</td><td>40 ms</td></tr>
+    <tr><td>login-ui</td><td>Login</td><td>55 ms</td></tr>
+    <tr><td>home-svc</td><td>Home</td><td>30 ms</td></tr>
+  </table>
   <h2>Conclusion</h2>
   <p>All targets were met this quarter.</p>
 </body></html>`;

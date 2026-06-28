@@ -131,6 +131,8 @@ never leaves the page.
 - **Capture vector diagrams** — detect and rasterize shape-drawn figures.
 - **Detect captions & figure labels** — attach "Figure N"/"Table N" text.
 - **Use embedded alt-text** — read accessibility alt-text from tagged PDFs.
+- **Reconstruct tables** — turn column-aligned text (ruled or borderless) into
+  GitHub-flavored Markdown tables.
 - **Run offline OCR** — read text inside images and convert scanned pages
   (Tesseract; the English model is bundled). Slower; first use initializes the
   local model.
@@ -168,7 +170,9 @@ on text-less (scanned) pages.
 
 ## Limitations
 
-- **Tables** are kept as text lines, not reconstructed into Markdown tables.
+- **Tables** are reconstructed from column-aligned text (heuristic); very
+  irregular layouts or merged/spanning cells may not map cleanly. Toggle it off
+  if a particular document misfires.
 - **Caption matching** is positional and works best with conventional
   "Figure N:"/"Table N:" labels.
 - **Bold/italic** is best-effort, based on the font the PDF uses.

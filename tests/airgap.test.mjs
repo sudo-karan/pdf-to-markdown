@@ -78,6 +78,7 @@ try {
   check('raster image embedded', /!\[[^\]]*\]\(images\/[^)]+\.(jpg|png)\)/.test(md));
   check('Figure 1 caption attached', /Figure 1/.test(md));
   check('vector diagram (Figure 2) captured', /Figure 2/.test(md));
+  check('table reconstructed (GFM)', /\|\s*Service\s*\|\s*Role\s*\|\s*Latency\s*\|/.test(md) && /\|\s*---\s*\|/.test(md) && /\|\s*auth-api\s*\|/.test(md));
   check('two images in preview', imgCount === 2);
   check('front matter present', /^---\n[\s\S]*title:/m.test(md));
 } catch (e) {

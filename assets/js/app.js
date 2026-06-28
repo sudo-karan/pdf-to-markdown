@@ -71,6 +71,7 @@ function gatherOpts() {
     ocr: $('optOcr').checked,
     headings: $('optHeadings').checked,
     lists: $('optLists').checked,
+    tables: $('optTables').checked,
     emphasis: $('optEmphasis').checked,
     frontMatter: $('optFrontMatter').checked,
     pageRules: $('optPageRules').checked,
