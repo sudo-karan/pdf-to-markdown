@@ -56,11 +56,45 @@ python3 serve.py            # then open http://localhost:8000
 python3 serve.py 9000       # custom port
 ```
 
-Any static file server works too (e.g. `npx serve`, `php -S localhost:8000`),
-as long as it serves `.mjs` as JavaScript and `.wasm` as `application/wasm`.
+Any static file server works too (e.g. `npx serve`, `php -S localhost:8000`).
+All scripts are `.js` and the app needs no special MIME configuration.
 
 No build step, no `npm install` — the app is plain HTML/CSS/JS with every
 dependency vendored under `vendor/`.
+
+---
+
+## Hosting it online (GitHub Pages)
+
+The app is fully static, so it can be published to GitHub Pages and used from any
+browser. All asset paths are relative, so it works under a project subpath like
+`https://<you>.github.io/pdf-to-markdown/` with no changes.
+
+A workflow is included at `.github/workflows/deploy-pages.yml` that deploys the
+repo root to Pages on every push to `main`. To turn it on **once**:
+
+> **Settings → Pages → Build and deployment → Source → GitHub Actions**
+
+Then push to `main` (or run the workflow manually from the Actions tab). Your
+site appears at `https://<you>.github.io/pdf-to-markdown/`.
+
+*Prefer no workflow?* You can instead pick **Source → Deploy from a branch →
+`main` / `/ (root)`** — the app is at the repo root, so that works too.
+
+### Is the online version still "air-gapped"?
+
+Once it's hosted, the **page itself** is downloaded from GitHub — so it's no
+longer air-gapped in the strict sense. But the privacy guarantee is unchanged:
+
+- Your **PDF never leaves your browser**. Conversion runs entirely client-side;
+  nothing is uploaded.
+- The same strict CSP applies (`default-src 'none'`, no http(s) host anywhere),
+  so after the page loads it makes **zero** network requests. Verify in
+  DevTools → Network.
+
+If you need a *truly* air-gapped setup, use the offline path above (`serve.py`)
+on a disconnected machine — that's what the strict CSP and fully-vendored
+dependencies are designed for.
 
 ---
 

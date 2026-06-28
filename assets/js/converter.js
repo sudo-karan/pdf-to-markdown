@@ -2,13 +2,13 @@
 // No network access of any kind: worker, cmaps and standard fonts are all loaded
 // from ./vendor. The module exposes a single async function, convertPdf().
 
-import * as pdfjsLib from '../../vendor/pdfjs/pdf.min.mjs';
+import * as pdfjsLib from '../../vendor/pdfjs/pdf.min.js';
 
 // Resolve vendored asset URLs relative to the page (works under any path the
 // app is served from). document.baseURI is the URL of index.html.
 const v = (p) => new URL('vendor/' + p, document.baseURI).href;
 
-pdfjsLib.GlobalWorkerOptions.workerSrc = v('pdfjs/pdf.worker.min.mjs');
+pdfjsLib.GlobalWorkerOptions.workerSrc = v('pdfjs/pdf.worker.min.js');
 
 const { OPS, Util } = pdfjsLib;
 
