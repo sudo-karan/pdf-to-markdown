@@ -177,8 +177,25 @@ async function convertPage(page, pageNum, opts, ctx) {
   const bigCover = regions.find(r => rArea(r.bbox) > 0.55 * pageArea);
   const isScanned = textChars < 12 && !!bigCover;
 
-  // ---- 3. CAPTIONS / ALT TEXT --------------------------------------------
-  const consumed = new Set();             // line indices consumed as captions
+  const consumed = new Set();             // line indices consumed as captions/tables
+
+  // ---- 3. TABLES ---------------------------------------------------------
+  // Detect tables from the text BEFORE captions and rasterization. A ruled
+  // table's grid lines otherwise look like a vector "diagram", so we drop any
+  // image region that sits on top of a detected table — and do it before
+  // caption matching so a table region can't steal a nearby figure's caption.
+  const docLeft = mode(lines.filter(l => l.text).map(l => Math.round(l.x0))) || 0;
+  const maxRight = Math.max(docLeft + 1, ...lines.filter(l => l.text).map(l => l.x1));
+  const pctx = { bodyFont, docLeft, textWidth: maxRight - docLeft, pageWidth: pageW, fontStyles };
+  const tables = opts.tables ? detectTables(lines, consumed, pctx) : [];
+  if (tables.length) {
+    regions = regions.filter(reg => !tables.some(t => {
+      const inter = rIntersect(reg.bbox, t.bbox);
+      return inter && rArea(inter) > 0.4 * rArea(reg.bbox);
+    }));
+  }
+
+  // ---- 3b. CAPTIONS / ALT TEXT -------------------------------------------
   const structAlts = opts.altText ? await safeStructAlts(page) : [];
   let altCursor = 0;
   if (opts.captions) {
@@ -239,15 +256,13 @@ async function convertPage(page, pageNum, opts, ctx) {
     }
   }
 
-  // ---- 6. INTERLEAVE text blocks + images by vertical position ------------
+  // ---- 6. INTERLEAVE text blocks + tables + images by vertical position ---
   const blocks = groupBlocks(lines, consumed, bodyFont, opts);
-  const docLeft = mode(lines.filter(l => l.text).map(l => Math.round(l.x0))) || 0;
-  const maxRight = Math.max(docLeft + 1, ...lines.filter(l => l.text).map(l => l.x1));
-  const pctx = { bodyFont, docLeft, textWidth: maxRight - docLeft, pageWidth: pageW, fontStyles };
 
   const elements = [];
   for (const b of blocks) elements.push({ top: b.top, kind: 'text', block: b });
   for (const r of regions) elements.push({ top: r.bbox.y0, kind: 'media', region: r });
+  for (const t of tables) elements.push({ top: t.top, kind: 'table', table: t });
   elements.sort((a, b) => a.top - b.top);
 
   const out = [];
@@ -256,6 +271,8 @@ async function convertPage(page, pageNum, opts, ctx) {
     if (el.kind === 'text') {
       const t = renderBlock(el.block, pctx, headingScale, opts);
       if (t) out.push(t);
+    } else if (el.kind === 'table') {
+      out.push(renderTable(el.table));
     } else {
       out.push(renderMedia(el.region, opts));
     }
@@ -513,6 +530,127 @@ function inline(block, opts, pctx) {
 
 function isListMarker(t) {
   return /^\s*([•‣◦⁃∙·▪●○■–]|[-\*]\s|\(?(\d{1,3}|[a-zA-Z]|[ivxlcdm]{1,4})[.\)])\s+/.test(t);
+}
+
+// =============================================================================
+// TABLES: reconstruct GFM tables from column-aligned text runs
+// =============================================================================
+// Strategy: a table is a run of consecutive lines that each split into >= 2
+// "cells" (segments separated by wide horizontal gaps), where the cell start
+// positions line up into consistent columns across rows. Guards (short cells,
+// fill ratio, column stability) keep ordinary prose and 2-column page layouts
+// from being misread as tables.
+
+function detectTables(lines, consumed, pctx) {
+  const bodyFont = pctx.bodyFont;
+  const cand = lines.map((l, idx) => {
+    if (consumed.has(idx) || !l.text) return null;
+    const segs = lineSegments(l, bodyFont);
+    return segs.length >= 2 ? { idx, line: l, segs } : null;
+  });
+
+  const tables = [];
+  let i = 0;
+  while (i < cand.length) {
+    if (!cand[i]) { i++; continue; }
+    // gather a run of consecutive candidate rows with regular vertical spacing
+    const run = [cand[i]];
+    let j = i + 1;
+    while (j < cand.length && cand[j]) {
+      const prev = run[run.length - 1].line, cur = cand[j].line;
+      if (cur.top - prev.baseline > Math.max(prev.fontH, cur.fontH) * 2.0) break;
+      run.push(cand[j]); j++;
+    }
+    let made = false;
+    if (run.length >= 2) {
+      const tbl = buildTable(run, pctx);
+      if (tbl) { tables.push(tbl); run.forEach(r => consumed.add(r.idx)); i = j; made = true; }
+    }
+    if (!made) i++;
+  }
+  return tables;
+}
+
+// Split a line into cells: items separated by a gap wider than a column break.
+function lineSegments(line, bodyFont) {
+  const colGap = Math.max(bodyFont * 1.1, 14);
+  const wordGap = (bodyFont || 10) * 0.25;
+  const segs = [];
+  let cur = null;
+  for (const it of line.rawItems) {
+    if (!it.str.trim()) continue;
+    if (cur && (it.x - cur.x1) <= colGap) {
+      cur.text += (it.x - cur.x1 > wordGap ? ' ' : '') + it.str;
+      cur.x1 = it.right;
+    } else {
+      if (cur) segs.push(cur);
+      cur = { x0: it.x, x1: it.right, text: it.str };
+    }
+  }
+  if (cur) segs.push(cur);
+  return segs.map(s => ({ x0: s.x0, text: s.text.replace(/\s+/g, ' ').trim() })).filter(s => s.text);
+}
+
+function buildTable(run, pctx) {
+  const bodyFont = pctx.bodyFont;
+  const starts = [];
+  for (const r of run) for (const s of r.segs) starts.push(s.x0);
+  const cols = clusterPositions(starts, bodyFont * 1.5);
+  if (cols.length < 2 || cols.length > 12) return null;
+
+  const rows = run.map(r => {
+    const cells = new Array(cols.length).fill('');
+    for (const s of r.segs) {
+      const ci = nearestIndex(cols, s.x0);
+      cells[ci] = cells[ci] ? `${cells[ci]} ${s.text}` : s.text;
+    }
+    return cells;
+  });
+
+  // validation: enough multi-cell rows, decent fill, short cells (not prose cols)
+  if (rows.filter(c => c.filter(Boolean).length >= 2).length < 2) return null;
+  const cells = rows.flat().filter(Boolean);
+  const avgLen = cells.reduce((n, c) => n + c.length, 0) / cells.length;
+  if (avgLen > 40) return null;
+  const fill = cells.length / (rows.length * cols.length);
+  if (fill < 0.5) return null;
+
+  const x0 = Math.min(...run.flatMap(r => r.segs.map(s => s.x0)));
+  const x1 = Math.max(...run.map(r => r.line.x1));
+  return { rows, top: run[0].line.top, bbox: rect(x0, run[0].line.top, x1, run[run.length - 1].line.baseline) };
+}
+
+// 1-D greedy clustering of x positions -> sorted cluster centers.
+function clusterPositions(values, tol) {
+  const sorted = [...values].sort((a, b) => a - b);
+  const clusters = [];
+  let group = [sorted[0]];
+  for (let k = 1; k < sorted.length; k++) {
+    if (sorted[k] - group[group.length - 1] <= tol) group.push(sorted[k]);
+    else { clusters.push(group); group = [sorted[k]]; }
+  }
+  clusters.push(group);
+  return clusters.map(g => g.reduce((a, b) => a + b, 0) / g.length);
+}
+
+function nearestIndex(centers, x) {
+  let best = 0, bestD = Infinity;
+  for (let c = 0; c < centers.length; c++) {
+    const d = Math.abs(centers[c] - x);
+    if (d < bestD) { bestD = d; best = c; }
+  }
+  return best;
+}
+
+function renderTable(table) {
+  const esc = (c) => htmlAngle(String(c)).replace(/\|/g, '\\|').replace(/\s+/g, ' ').trim();
+  const header = table.rows[0].map(esc);
+  const out = [
+    '| ' + header.join(' | ') + ' |',
+    '| ' + header.map(() => '---').join(' | ') + ' |',
+  ];
+  for (let r = 1; r < table.rows.length; r++) out.push('| ' + table.rows[r].map(esc).join(' | ') + ' |');
+  return out.join('\n');
 }
 
 // =============================================================================
