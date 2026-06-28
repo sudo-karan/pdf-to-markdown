@@ -88,6 +88,23 @@ body { display: flex; flex-direction: column; min-height: 100vh; }
 .dz-sub { margin: 0; color: var(--muted); font-size: 12.5px; }
 .dropzone.has-file { border-style: solid; border-color: var(--accent-2); }
 
+/* Privacy / data-handling notice */
+.privacy {
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--panel-2); padding: 2px 12px;
+}
+.privacy > summary {
+  cursor: pointer; padding: 9px 2px; font-weight: 600; font-size: 13px; color: var(--accent-2);
+  list-style: none;
+}
+.privacy > summary::-webkit-details-marker { display: none; }
+.privacy > summary::before { content: "\25B6"; font-size: 10px; margin-right: 8px; color: var(--muted); }
+.privacy[open] > summary::before { content: "\25BC"; }
+.privacy-body { padding: 0 0 10px; }
+.privacy-body ul { margin: 0; padding-left: 18px; }
+.privacy-body li { font-size: 12.5px; color: var(--muted); margin: 7px 0; line-height: 1.45; }
+.privacy-body strong { color: var(--text); }
+
 /* Fieldsets */
 .opts {
   border: 1px solid var(--border); border-radius: var(--radius);
@@ -158,7 +175,6 @@ body { display: flex; flex-direction: column; min-height: 100vh; }
 .preview-pane blockquote { border-left: 3px solid var(--accent); margin: .8em 0; padding: .2em 14px; color: var(--muted); }
 .preview-pane table { border-collapse: collapse; margin: 1em 0; }
 .preview-pane th, .preview-pane td { border: 1px solid var(--border); padding: 6px 10px; }
-.preview-pane em.figcaption { display: block; color: var(--muted); font-size: .9em; margin-top: -2px; }
 .preview-pane hr { border: none; border-top: 1px solid var(--border); margin: 1.5em 0; }
 .preview-pane a { color: var(--accent); }
 .preview-pane pre.frontmatter { background: #11151d; border: 1px solid var(--border); color: var(--muted); font-size: 12px; margin: 4px 0 14px; }

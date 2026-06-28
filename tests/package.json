@@ -1,0 +1,13 @@
+{
+  "name": "pdf-to-markdown-tests",
+  "private": true,
+  "type": "module",
+  "description": "End-to-end air-gap + conversion test (run from the tests/ folder).",
+  "scripts": {
+    "fixture": "node generate-fixture.mjs",
+    "test": "node airgap.test.mjs"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.49.1"
+  }
+}
